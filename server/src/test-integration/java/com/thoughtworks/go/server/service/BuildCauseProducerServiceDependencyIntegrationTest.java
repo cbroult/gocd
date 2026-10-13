@@ -389,7 +389,7 @@ public class BuildCauseProducerServiceDependencyIntegrationTest {
         //SHOULD be queued exactly like the unfiltered case above
         pipelineTimeline.update();
         scheduleHelper.autoSchedulePipelinesWithRealMaterials(downstreamPipelineName);
-        softly.assertThat(pipelineScheduleQueue.toBeScheduled().keySet()).contains(cis(downstreamPipelineName));
+        assertThat(pipelineScheduleQueue.toBeScheduled().keySet()).contains(cis(downstreamPipelineName));
     }
 
     @Test
