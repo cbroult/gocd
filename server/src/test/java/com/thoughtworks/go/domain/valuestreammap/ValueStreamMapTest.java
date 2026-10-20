@@ -532,5 +532,36 @@ public class ValueStreamMapTest {
 
         assertNull(valueStreamMap.getCurrentPipeline().getViewType());
     }
-}
 
+    private ValueStreamMap mapWithTwoRevisionsOfOneMaterial(boolean secondViaIgnoredDependency, boolean secondAlsoReachedDirectly) {
+        ValueStreamMap valueStreamMap = new ValueStreamMap(cis("current"), null);
+        SCMDependencyNode scmDependencyNode = new SCMDependencyNode("id", "git_node", "git");
+        MaterialRevision own = new MaterialRevision(MaterialsMother.gitMaterial("git/repo/url"), ModificationsMother.oneModifiedFile("rev1"));
+        MaterialRevision viaUpstream = new MaterialRevision(MaterialsMother.gitMaterial("git/repo/url"), ModificationsMother.oneModifiedFile("rev2"));
+        CaseInsensitiveString current = valueStreamMap.getCurrentPipeline().getId();
+
+        valueStreamMap.addUpstreamMaterialNode(scmDependencyNode, cis("git"), current, own);
+        valueStreamMap.markRevisionReached(own, false);
+        valueStreamMap.addUpstreamMaterialNode(scmDependencyNode, cis("git"), current, viaUpstream);
+        valueStreamMap.markRevisionReached(viaUpstream, secondViaIgnoredDependency);
+        if (secondAlsoReachedDirectly) {
+            valueStreamMap.markRevisionReached(viaUpstream, false);
+        }
+        valueStreamMap.addWarningIfBuiltFromInCompatibleRevisions();
+        return valueStreamMap;
+    }
+
+    @Test
+    public void currentPipelineShouldNotHaveWarningsIfTheOtherRevisionCameOnlyThroughAnIgnoreForSchedulingDependency() {
+        ValueStreamMap valueStreamMap = mapWithTwoRevisionsOfOneMaterial(true, false);
+
+        assertNull(valueStreamMap.getCurrentPipeline().getViewType());
+    }
+
+    @Test
+    public void currentPipelineShouldStillHaveWarningsIfTheOtherRevisionWasAlsoReachedThroughAnOrdinaryDependency() {
+        ValueStreamMap valueStreamMap = mapWithTwoRevisionsOfOneMaterial(true, true);
+
+        assertThat(valueStreamMap.getCurrentPipeline().getViewType()).isEqualTo(VSMViewType.WARNING);
+    }
+}

@@ -109,7 +109,7 @@ public class ValueStreamMapService {
         Map<CaseInsensitiveString, List<PipelineConfig>> pipelineToDownstreamMap = cruiseConfig.generatePipelineVsDownstreamMap();
 
         traverseDownstream(pipelineName, pipelineToDownstreamMap, valueStreamMap, new ArrayList<>());
-        traverseUpstream(pipelineName, buildCauseForPipeline, valueStreamMap, new ArrayList<>());
+        traverseUpstream(pipelineName, buildCauseForPipeline, valueStreamMap, new ArrayList<>(), false);
 
         if (valueStreamMap.hasCycle()) {
             result.notImplemented("Value Stream Map of Pipeline '" + pipelineName + "' with counter '" + counter + "' can not be rendered. Changes to the configuration have introduced complex dependencies for this instance which are not supported currently.");
@@ -215,7 +215,7 @@ public class ValueStreamMapService {
         }
     }
 
-    private void traverseUpstream(CaseInsensitiveString pipelineName, BuildCause buildCause, ValueStreamMap graph, List<MaterialRevision> visitedNodes) {
+    private void traverseUpstream(CaseInsensitiveString pipelineName, BuildCause buildCause, ValueStreamMap graph, List<MaterialRevision> visitedNodes, boolean viaIgnoredDependency) {
         for (MaterialRevision materialRevision : buildCause.getMaterialRevisions()) {
             Material material = materialRevision.getMaterial();
             if (material instanceof DependencyMaterial dependencyMaterial) {
@@ -231,10 +231,11 @@ public class ValueStreamMapService {
                 visitedNodes.add(materialRevision);
                 DependencyMaterialRevision dmrOfUpstreamPipeline = buildCause.getMaterialRevisions().findDependencyMaterialRevision(upstreamPipeline.toString());
                 BuildCause buildCauseForUpstreamPipeline = pipelineService.buildCauseFor(dmrOfUpstreamPipeline.getPipelineName(), dmrOfUpstreamPipeline.getPipelineCounter());
-                traverseUpstream(upstreamPipeline, buildCauseForUpstreamPipeline, graph, visitedNodes);
+                traverseUpstream(upstreamPipeline, buildCauseForUpstreamPipeline, graph, visitedNodes, viaIgnoredDependency || dependencyMaterial.ignoreForScheduling());
             } else {
                 graph.addUpstreamMaterialNode(new SCMDependencyNode(material.getFingerprint(), material.getUriForDisplay(), materialRevision.getMaterialType()), material.getName(),
                         pipelineName, materialRevision);
+                graph.markRevisionReached(materialRevision, viaIgnoredDependency);
             }
         }
     }
