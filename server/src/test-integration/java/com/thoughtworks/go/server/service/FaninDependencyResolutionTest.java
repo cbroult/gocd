@@ -870,6 +870,11 @@ public class FaninDependencyResolutionTest {
     @Test
     public void shouldScheduleDownstreamPipeline_withDiamondSharedFilteredMaterialAndIgnoredDependencyMaterial_whenFilteredMaterialHasMatchingChanges() {
         GitMaterial gitForDns = u.wf(new GitMaterial("shared-git-url"), "f1");
+        // dns_deploy is whitelisted to its own directory, as in the live incident: it will never build a commit under
+        // important-dir/, so nothing would ever move a pin to it. With an unfiltered dns_deploy it WOULD build that commit and
+        // nginx_proxy_deploy correctly waits (shouldKeepThePinWhenIgnoredUpstreamWillBuildTheNewerCommit_...).
+        gitForDns.setInvertFilter(true);
+        gitForDns.setFilter(Filter.fromDisplayString("dns-dir/*,dns-dir/**/*"));
         u.checkinInOrder(gitForDns, "g1");
 
         ScheduleTestUtil.AddedPipeline dnsDeploy = u.saveConfigWith("dns_deploy", u.m(gitForDns));
@@ -916,6 +921,120 @@ public class FaninDependencyResolutionTest {
                 + "whitelisted git material, even though its ignoreForScheduling dependency material "
                 + "(dns_deploy) did not itself advance")
             .isNotNull();
+    }
+
+    // The same diamond, asked a different question: for a commit newer than the one dns_deploy built, which revision of
+    // the shared git repository is nginx_proxy_deploy resolved to? The pin (dns_deploy's built revision, "g1") makes
+    // nginx_proxy_deploy wait for dns_deploy, as it does for an ordinary dependency. It is kept only when dns_deploy
+    // will itself build the newer commit; if dns_deploy's own whitelist ignores it, nothing would ever move the pin and
+    // the pipeline would freeze, so the newer revision ("g2") is used.
+    private static final String DNS_WHITELIST = "dns-dir/*,dns-dir/**/*";
+    private static final String NGINX_WHITELIST = "important-dir/*,important-dir/**/*";
+
+    private String sharedGitRevisionResolvedForNginx(String dnsWhitelist, String committedFile) {
+        GitMaterial gitForDns = u.wf(new GitMaterial("shared-git-url"), "f1");
+        if (dnsWhitelist != null) {
+            gitForDns.setInvertFilter(true);
+            gitForDns.setFilter(Filter.fromDisplayString(dnsWhitelist));
+        }
+        u.checkinInOrder(gitForDns, "g1");
+        ScheduleTestUtil.AddedPipeline dnsDeploy = u.saveConfigWith("dns_deploy", u.m(gitForDns));
+        String dns1 = u.runAndPass(dnsDeploy, "g1");
+
+        GitMaterial gitForNginx = new GitMaterial("shared-git-url");
+        gitForNginx.setFolder("f2");
+        gitForNginx.setInvertFilter(true);
+        gitForNginx.setFilter(Filter.fromDisplayString(NGINX_WHITELIST));
+        DependencyMaterial ignoredDnsDependency = new DependencyMaterial(
+            dnsDeploy.material.getName(), dnsDeploy.material.getPipelineName(), dnsDeploy.material.getStageName(), true);
+        ScheduleTestUtil.AddedPipeline nginxProxyDeploy = u.saveConfigWith("nginx_proxy_deploy", u.m(gitForNginx), u.m(ignoredDnsDependency));
+        u.runAndPass(nginxProxyDeploy, "g1", dns1);
+
+        transactionTemplate.execute(status -> {
+            Modification modification = new Modification("user", "comment", "a@b.com", new Date(), "g2");
+            modification.createModifiedFile(committedFile, null, ModifiedAction.added);
+            materialRepository.saveMaterialRevision(new MaterialRevision(gitForNginx, modification));
+            return null;
+        });
+
+        MaterialRevisions given = u.mrs(
+            u.mr(ignoredDnsDependency, false, dns1),
+            u.mr(gitForNginx, true, "g2"));
+        return getRevisionsBasedOnDependencies(nginxProxyDeploy, goConfigDao.currentConfig(), given)
+            .findRevisionFor(gitForNginx).getLatestRevisionString();
+    }
+
+    @Test
+    public void shouldKeepThePinWhenIgnoredUpstreamWillBuildTheNewerCommit_soDownstreamWaitsForIt() {
+        // dns_deploy takes the whole repository, so it will build the commit nginx_proxy_deploy also matches.
+        assertThat(sharedGitRevisionResolvedForNginx(null, "important-dir/another_file.c")).isEqualTo("g1");
+    }
+
+    @Test
+    public void shouldKeepThePinWhenBothWhitelistsMatchTheNewerCommit() {
+        assertThat(sharedGitRevisionResolvedForNginx(DNS_WHITELIST + "," + NGINX_WHITELIST, "important-dir/another_file.c")).isEqualTo("g1");
+    }
+
+    @Test
+    public void shouldNotPinWhenIgnoredUpstreamWillNeverBuildTheNewerCommit_soDownstreamIsNotFrozen() {
+        // The Phase 186 freeze: dns_deploy's whitelist ignores important-dir/, so nothing would ever move the pin.
+        assertThat(sharedGitRevisionResolvedForNginx(DNS_WHITELIST, "important-dir/another_file.c")).isEqualTo("g2");
+    }
+
+    @Test
+    public void shouldKeepThePinForACommitOnlyTheUpstreamBuilds_soTheDownstreamStaysOnTheUpstreamsRevision() {
+        assertThat(sharedGitRevisionResolvedForNginx(DNS_WHITELIST, "dns-dir/zone")).isEqualTo("g1");
+    }
+
+    // A three-level chain on one repository: a_deploy (a-dir/) <- b_deploy (b-dir/) <- c_deploy (c-dir/), each dependency
+    // ignoreForScheduling. b_deploy has built a commit of its own (g2) that a_deploy has not. A new commit under c-dir/ (g3) is
+    // ignored by b_deploy's whitelist, so b_deploy will never build it: c_deploy must be resolved to g3, not pinned to the
+    // older revision a_deploy's run embeds. (Found by the A/B/C variations, V2 and V3 step 2: the refined build froze here.)
+    @Test
+    public void shouldNotPinThirdLevelPipelineToAnOlderRevision_whenTheMiddlePipelineWillNeverBuildTheNewCommit() {
+        GitMaterial gitForA = u.wf(new GitMaterial("shared-git-url"), "fa");
+        gitForA.setInvertFilter(true);
+        gitForA.setFilter(Filter.fromDisplayString("a-dir/*,a-dir/**/*"));
+        u.checkinInOrder(gitForA, "g1");
+        ScheduleTestUtil.AddedPipeline aDeploy = u.saveConfigWith("a_deploy", u.m(gitForA));
+        String a1 = u.runAndPass(aDeploy, "g1");
+
+        GitMaterial gitForB = new GitMaterial("shared-git-url");
+        gitForB.setFolder("fb");
+        gitForB.setInvertFilter(true);
+        gitForB.setFilter(Filter.fromDisplayString("b-dir/*,b-dir/**/*"));
+        DependencyMaterial ignoredADependency = new DependencyMaterial(
+            aDeploy.material.getName(), aDeploy.material.getPipelineName(), aDeploy.material.getStageName(), true);
+        ScheduleTestUtil.AddedPipeline bDeploy = u.saveConfigWith("b_deploy", u.m(gitForB), u.m(ignoredADependency));
+        String b1 = u.runAndPass(bDeploy, "g1", a1);
+
+        GitMaterial gitForC = new GitMaterial("shared-git-url");
+        gitForC.setFolder("fc");
+        gitForC.setInvertFilter(true);
+        gitForC.setFilter(Filter.fromDisplayString("c-dir/*,c-dir/**/*"));
+        DependencyMaterial ignoredBDependency = new DependencyMaterial(
+            bDeploy.material.getName(), bDeploy.material.getPipelineName(), bDeploy.material.getStageName(), true);
+        ScheduleTestUtil.AddedPipeline cDeploy = u.saveConfigWith("c_deploy", u.m(gitForC), u.m(ignoredBDependency));
+        u.runAndPass(cDeploy, "g1", b1);
+
+        checkin("g2", "b-dir/changed.c", gitForB);
+        String b2 = u.runAndPass(bDeploy, "g2", a1);
+        checkin("g3", "c-dir/changed.c", gitForC);
+
+        MaterialRevisions given = u.mrs(
+            u.mr(ignoredBDependency, false, b2),
+            u.mr(gitForC, true, "g3"));
+        assertThat(getRevisionsBasedOnDependencies(cDeploy, goConfigDao.currentConfig(), given)
+            .findRevisionFor(gitForC).getLatestRevisionString()).isEqualTo("g3");
+    }
+
+    private void checkin(String revision, String file, GitMaterial material) {
+        transactionTemplate.execute(status -> {
+            Modification modification = new Modification("user", "comment", "a@b.com", new Date(), revision);
+            modification.createModifiedFile(file, null, ModifiedAction.added);
+            materialRepository.saveMaterialRevision(new MaterialRevision(material, modification));
+            return null;
+        });
     }
 
     private BuildCause getBuildCause(ScheduleTestUtil.AddedPipeline staging, MaterialRevisions given, MaterialRevisions previous) {
