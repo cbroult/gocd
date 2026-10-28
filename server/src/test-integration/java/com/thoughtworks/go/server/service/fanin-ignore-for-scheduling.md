@@ -85,14 +85,16 @@ Same test files (those of `91959ba71b`) run against three versions of `FanInGrap
 
 | Test | Stock | First patch | Refined |
 |---|---|---|---|
-| `shouldScheduleDownstreamPipeline_withDiamondSharedFilteredMaterialAndIgnoredDependencyMaterial_whenFilteredMaterialHasMatchingChanges` (the freeze) | **fail** | pass | pass |
-| `shouldNotPinWhenIgnoredUpstreamWillNeverBuildTheNewerCommit_soDownstreamIsNotFrozen` | **fail** | pass | pass |
-| `shouldNotPinThirdLevelPipelineToAnOlderRevision_whenTheMiddlePipelineWillNeverBuildTheNewCommit` | **fail** | pass | pass |
-| `shouldKeepThePinWhenIgnoredUpstreamWillBuildTheNewerCommit_soDownstreamWaitsForIt` | pass | **fail** | pass |
-| `shouldKeepThePinWhenBothWhitelistsMatchTheNewerCommit` | pass | **fail** | pass |
-| `shouldKeepThePinForACommitOnlyTheUpstreamBuilds_soTheDownstreamStaysOnTheUpstreamsRevision` | pass | **fail** | pass |
+| `shouldScheduleDownstreamPipeline_withDiamondSharedFilteredMaterialAndIgnoredDependencyMaterial_whenFilteredMaterialHasMatchingChanges` (the freeze) | ❌ **fail** | pass | pass |
+| `shouldNotPinWhenIgnoredUpstreamWillNeverBuildTheNewerCommit_soDownstreamIsNotFrozen` | ❌ **fail** | pass | pass |
+| `shouldNotPinThirdLevelPipelineToAnOlderRevision_whenTheMiddlePipelineWillNeverBuildTheNewCommit` | ❌ **fail** | pass | pass |
+| `shouldKeepThePinWhenIgnoredUpstreamWillBuildTheNewerCommit_soDownstreamWaitsForIt` | pass | ❌ **fail** | pass |
+| `shouldKeepThePinWhenBothWhitelistsMatchTheNewerCommit` | pass | ❌ **fail** | pass |
+| `shouldKeepThePinForACommitOnlyTheUpstreamBuilds_soTheDownstreamStaysOnTheUpstreamsRevision` | pass | ❌ **fail** | pass |
 | the other 25 (existing fan-in, diamond and dependency integration tests) | pass | pass | pass |
 | **Total (31)** | 3 fail | 3 fail | 0 fail |
+
+❌ marks a failing test, that is, behaviour that is broken.
 
 Reading it: stock freezes, the first patch fixes the freeze and loses the order, the refined patch does both. The
 `ValueStreamMapTest` and `ValueStreamMapServiceTest` suites pass at `91959ba71b` (22 and 22 per the earlier record; the
@@ -116,7 +118,7 @@ Summary:
 
 ### Layouts and results
 
-Six layouts, numbered V1 to V6. The overview lists them all; the tables after it give every step, with the expectation written before the run and what each server did. Each step PASSes when the set of pipelines that scheduled equals the expectation. "ordered" means each started after the previous finished.
+Six layouts, numbered V1 to V6. The overview lists them all; the tables after it give every step, with the expectation written before the run and what each server did. Each step PASSes when the set of pipelines that scheduled equals the expectation; "ordered" means each started after the previous finished. ❌ marks behaviour that is broken: the server froze a pipeline that should have built, or lost the order the dependency gives. PASS means the run matched the prediction, including when the predicted behaviour is a broken one.
 
 #### Overview
 
@@ -176,11 +178,11 @@ flowchart LR
 | Step | What changes | Expected stock | Expected patched | Expected refined | Observed stock | Observed patched | Observed refined |
 |---|---|---|---|---|---|---|---|
 | 0 | initial commits | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 39.0s) |
-| 1 | only the file B monitors in A's repository changes (A's whitelist does not match) | none | B | B | PASS: none | PASS: B | PASS: B |
-| 2 | only the file C monitors in A's repository changes | none | C | C | PASS: none | PASS: C | PASS: C |
+| 1 | only the file B monitors in A's repository changes (A's whitelist does not match) | ❌ **none** | B | B | ❌ **PASS: none** | PASS: B | PASS: B |
+| 2 | only the file C monitors in A's repository changes | ❌ **none** | C | C | ❌ **PASS: none** | PASS: C | PASS: C |
 | 3 | B's own repository changes | B | B | B | PASS: B | PASS: B | PASS: B |
 | 4 | A's own directory changes: B and C follow it (B and C share its repository; measured on stock, patched and refined) | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 60.0s) |
-| 5 | A's directory and both monitored files change in one commit | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (together, 0.0s) | PASS: A, B, C (ordered, 20.0s) |
+| 5 | A's directory and both monitored files change in one commit | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 40.0s) | ❌ **PASS: A, B, C (together, 0.0s)** | PASS: A, B, C (ordered, 20.0s) |
 
 #### V3: A and B share a repository, C is separate and monitors a file in the shared one
 
@@ -202,11 +204,11 @@ flowchart LR
 | Step | What changes | Expected stock | Expected patched | Expected refined | Observed stock | Observed patched | Observed refined |
 |---|---|---|---|---|---|---|---|
 | 0 | initial commits | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.0s) |
-| 1 | only B's directory changes in the shared repository (the shape of the original freeze) | none | B | B | PASS: none | PASS: B | PASS: B |
-| 2 | only the file C monitors changes | none | C | C | PASS: none | PASS: C | PASS: C |
+| 1 | only B's directory changes in the shared repository (the shape of the original freeze) | ❌ **none** | B | B | ❌ **PASS: none** | PASS: B | PASS: B |
+| 2 | only the file C monitors changes | ❌ **none** | C | C | ❌ **PASS: none** | PASS: C | PASS: C |
 | 3 | C's own repository changes | C | C | C | PASS: C | PASS: C | PASS: C |
 | 4 | A's directory changes: B and C follow it (measured on stock, patched and refined) | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 60.0s) |
-| 5 | A's and B's directories and the monitored file change together | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (together, 0.0s) | PASS: A, B, C (ordered, 20.0s) |
+| 5 | A's and B's directories and the monitored file change together | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 50.0s) | ❌ **PASS: A, B, C (together, 0.0s)** | PASS: A, B, C (ordered, 20.0s) |
 
 #### V4: One repository, ordinary dependencies (not ignored for scheduling): the control
 
@@ -276,6 +278,6 @@ flowchart LR
 |---|---|---|---|---|---|---|---|
 | 0 | initial commits | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 29.0s) | PASS: A, B, C (ordered, 29.1s) | PASS: A, B, C (ordered, 29.0s) |
 | 1 | A's own directory changes: B, sharing the repository, follows A's run; C, with no dependency, does not | A, B | A, B | A, B | PASS: A, B (ordered, 30.0s) | PASS: A, B (ordered, 30.0s) | PASS: A, B (ordered, 20.0s) |
-| 2 | only the file B monitors changes | none | B | B | PASS: none | PASS: B | PASS: B |
+| 2 | only the file B monitors changes | ❌ **none** | B | B | ❌ **PASS: none** | PASS: B | PASS: B |
 | 3 | A's own directory changes again, after B has built: B follows again | A, B | A, B | A, B | PASS: A, B (ordered, 20.0s) | PASS: A, B (ordered, 20.0s) | PASS: A, B (ordered, 20.0s) |
 
