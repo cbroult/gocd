@@ -67,8 +67,14 @@ All pushed to `github.com/cbroult/gocd`.
 | `a7ed761ccc0c1b46d6856c49f97732d6af987da6` | `cbp/26.1.0` | VSM: no "incompatible revisions" warning for a revision reached only through an ignored dependency |
 | `91959ba71bf3d99bf05630732e94cf6f46ab858f` | `cbp/26.1.0` | refined fan-in: keep the pin when the upstream will build the newer commit |
 
-Also pushed: `9200ddff1adebb035370cfd962698facc04d338f` on `fix/faninsql-diamond-pin-rebased` (the `GitCommand` test-helper fix
-for the PR branch, 2026-10-06). The PR branch ends there; the refined patch and the VSM change are only on `cbp/26.1.0` so far.
+The PR branch `fix/faninsql-diamond-pin-rebased` (based on master) carries the same changes as cherry-picks:
+
+| Commit | What |
+|---|---|
+| `04a63654fc793035f036577c6dd189428a4323d0` | first patch |
+| `9200ddff1adebb035370cfd962698facc04d338f` | `GitCommand.add` test-helper fix |
+| `2ea0f515a9700a9e5b91fe11bc153758199ce812` | refined fan-in (of `91959ba71b`) |
+| `7496341d8eadfc2404d7d70d44216c2fa5e77a48` | VSM change (of `a7ed761ccc`) |
 
 ## 4. Test results: stock, first patch, refined
 
@@ -110,7 +116,18 @@ Summary:
 
 ### Layouts and results
 
-Each step PASSes when the set of pipelines that scheduled equals the expectation. "ordered" means each started after the previous finished.
+Six layouts, numbered V1 to V6. The overview lists them all; the tables after it give every step, with the expectation written before the run and what each server did. Each step PASSes when the set of pipelines that scheduled equals the expectation. "ordered" means each started after the previous finished.
+
+#### Overview
+
+| Variation | Layout | What it shows |
+|---|---|---|
+| [V1](#v1-three-separate-repositories-a-to-b-to-c-by-dependency) | Three separate repositories, A to B to C by dependency | Control: three separate repositories. No shared material, so no difference between the servers. |
+| [V2](#v2-separate-repositories-b-and-c-also-monitor-a-file-in-as-repository) | Separate repositories, B and C also monitor a file in A's repository | B and C also monitor a file in A's repository. Reproduces the freeze and the lost order. |
+| [V3](#v3-a-and-b-share-a-repository-c-is-separate-and-monitors-a-file-in-the-shared-one) | A and B share a repository, C is separate and monitors a file in the shared one | A and B share a repository, C is separate and monitors a file in it. The freeze and the lost order again. |
+| [V4](#v4-one-repository-ordinary-dependencies-not-ignored-for-scheduling-the-control) | One repository, ordinary dependencies (not ignored for scheduling): the control | Control: one repository, ordinary dependencies. The behaviour the refined patch has to keep. |
+| [V5](#v5-v2s-repositories-and-whitelists-with-no-dependency-materials-is-the-upstreams-run-what-drags-b-and-c-along) | V2's repositories and whitelists with NO dependency materials: is the upstream's run what drags B and C along? | V2 without dependency materials. Isolation run: does the upstream's run drag B and C along? |
+| [V6](#v6-v2s-repositories-with-only-b-depending-on-a-c-has-no-dependency) | V2's repositories with only B depending on A (C has no dependency) | V2 with only B depending on A. Isolation run: a downstream sharing the repository follows its upstream's run. |
 
 #### V1: Three separate repositories, A to B to C by dependency
 
@@ -165,6 +182,54 @@ flowchart LR
 | 4 | A's own directory changes: B and C follow it (B and C share its repository; measured on stock, patched and refined) | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 60.0s) |
 | 5 | A's directory and both monitored files change in one commit | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (together, 0.0s) | PASS: A, B, C (ordered, 20.0s) |
 
+#### V3: A and B share a repository, C is separate and monitors a file in the shared one
+
+```mermaid
+flowchart LR
+  rab[("repo rab<br/>a/f, b/f, shared/c.yml")]
+  rc[("repo rc<br/>c/f")]
+  A[a-deploy]
+  rab -- "a/**/*" --> A
+  B[b-deploy]
+  rab -- "b/**/*" --> B
+  A -. "ignore_for_scheduling" .-> B
+  C[c-deploy]
+  rc -- "c/**/*" --> C
+  rab -- "shared/c.yml" --> C
+  B -. "ignore_for_scheduling" .-> C
+```
+
+| Step | What changes | Expected stock | Expected patched | Expected refined | Observed stock | Observed patched | Observed refined |
+|---|---|---|---|---|---|---|---|
+| 0 | initial commits | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.0s) |
+| 1 | only B's directory changes in the shared repository (the shape of the original freeze) | none | B | B | PASS: none | PASS: B | PASS: B |
+| 2 | only the file C monitors changes | none | C | C | PASS: none | PASS: C | PASS: C |
+| 3 | C's own repository changes | C | C | C | PASS: C | PASS: C | PASS: C |
+| 4 | A's directory changes: B and C follow it (measured on stock, patched and refined) | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 60.0s) |
+| 5 | A's and B's directories and the monitored file change together | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (together, 0.0s) | PASS: A, B, C (ordered, 20.0s) |
+
+#### V4: One repository, ordinary dependencies (not ignored for scheduling): the control
+
+```mermaid
+flowchart LR
+  app[("repo app<br/>dns/f, nginx-proxy/f, homepage/f, registry.yml")]
+  A[a-deploy]
+  app -- "dns/**/*, registry.yml" --> A
+  B[b-deploy]
+  app -- "nginx-proxy/**/*, registry.yml" --> B
+  A -. "ordinary dependency" .-> B
+  C[c-deploy]
+  app -- "homepage/**/*, registry.yml" --> C
+  B -. "ordinary dependency" .-> C
+```
+
+| Step | What changes | Expected stock | Expected patched | Expected refined | Observed stock | Observed patched | Observed refined |
+|---|---|---|---|---|---|---|---|
+| 0 | initial commit touches all three whitelists | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.1s) | PASS: A, B, C (ordered, 49.0s) |
+| 1 | only C's directory changes (an ordinary dependency still pins C to B's revision) | none | none | none | PASS: none | PASS: none | PASS: none |
+| 2 | only A's directory changes: A passes, which triggers B, which triggers C | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 40.0s) |
+| 3 | the shared file changes: all three whitelists match | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (ordered, 40.0s) |
+
 #### V5: V2's repositories and whitelists with NO dependency materials: is the upstream's run what drags B and C along?
 
 ```mermaid
@@ -213,52 +278,4 @@ flowchart LR
 | 1 | A's own directory changes: B, sharing the repository, follows A's run; C, with no dependency, does not | A, B | A, B | A, B | PASS: A, B (ordered, 30.0s) | PASS: A, B (ordered, 30.0s) | PASS: A, B (ordered, 20.0s) |
 | 2 | only the file B monitors changes | none | B | B | PASS: none | PASS: B | PASS: B |
 | 3 | A's own directory changes again, after B has built: B follows again | A, B | A, B | A, B | PASS: A, B (ordered, 20.0s) | PASS: A, B (ordered, 20.0s) | PASS: A, B (ordered, 20.0s) |
-
-#### V3: A and B share a repository, C is separate and monitors a file in the shared one
-
-```mermaid
-flowchart LR
-  rab[("repo rab<br/>a/f, b/f, shared/c.yml")]
-  rc[("repo rc<br/>c/f")]
-  A[a-deploy]
-  rab -- "a/**/*" --> A
-  B[b-deploy]
-  rab -- "b/**/*" --> B
-  A -. "ignore_for_scheduling" .-> B
-  C[c-deploy]
-  rc -- "c/**/*" --> C
-  rab -- "shared/c.yml" --> C
-  B -. "ignore_for_scheduling" .-> C
-```
-
-| Step | What changes | Expected stock | Expected patched | Expected refined | Observed stock | Observed patched | Observed refined |
-|---|---|---|---|---|---|---|---|
-| 0 | initial commits | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.0s) |
-| 1 | only B's directory changes in the shared repository (the shape of the original freeze) | none | B | B | PASS: none | PASS: B | PASS: B |
-| 2 | only the file C monitors changes | none | C | C | PASS: none | PASS: C | PASS: C |
-| 3 | C's own repository changes | C | C | C | PASS: C | PASS: C | PASS: C |
-| 4 | A's directory changes: B and C follow it (measured on stock, patched and refined) | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 60.0s) |
-| 5 | A's and B's directories and the monitored file change together | A, B, C | A, B, C | A, B, C in order | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (together, 0.0s) | PASS: A, B, C (ordered, 20.0s) |
-
-#### V4: One repository, ordinary dependencies (not ignored for scheduling): the control
-
-```mermaid
-flowchart LR
-  app[("repo app<br/>dns/f, nginx-proxy/f, homepage/f, registry.yml")]
-  A[a-deploy]
-  app -- "dns/**/*, registry.yml" --> A
-  B[b-deploy]
-  app -- "nginx-proxy/**/*, registry.yml" --> B
-  A -. "ordinary dependency" .-> B
-  C[c-deploy]
-  app -- "homepage/**/*, registry.yml" --> C
-  B -. "ordinary dependency" .-> C
-```
-
-| Step | What changes | Expected stock | Expected patched | Expected refined | Observed stock | Observed patched | Observed refined |
-|---|---|---|---|---|---|---|---|
-| 0 | initial commit touches all three whitelists | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 39.0s) | PASS: A, B, C (ordered, 39.1s) | PASS: A, B, C (ordered, 49.0s) |
-| 1 | only C's directory changes (an ordinary dependency still pins C to B's revision) | none | none | none | PASS: none | PASS: none | PASS: none |
-| 2 | only A's directory changes: A passes, which triggers B, which triggers C | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 40.0s) | PASS: A, B, C (ordered, 40.0s) |
-| 3 | the shared file changes: all three whitelists match | A, B, C | A, B, C | A, B, C | PASS: A, B, C (ordered, 60.0s) | PASS: A, B, C (ordered, 50.0s) | PASS: A, B, C (ordered, 40.0s) |
 
