@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.helpers.MessageFormatter;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.regex.Matcher;
@@ -236,9 +237,21 @@ public class GitCommand extends SCMCommand {
         return GitVersion.parse(gitVersionString);
     }
 
+    // An absolute file inside the working directory -- e.g. new File(workingDir, "some-dir/file.c") -- is added by its
+    // path relative to it, so a file in a subdirectory resolves to a pathspec git has. Anything else (a relative File
+    // such as new File(".gitmodules"), or a file outside the working directory) keeps the original behaviour: its name.
+    private String pathspecFor(File fileToAdd) {
+        Path working = workingDir.toPath().toAbsolutePath().normalize();
+        Path file = fileToAdd.toPath().normalize();
+        if (file.isAbsolute() && file.startsWith(working)) {
+            return working.relativize(file).toString();
+        }
+        return fileToAdd.getName();
+    }
+
     @TestOnly
     public void add(File fileToAdd) {
-        String[] args = new String[]{"add", "--", fileToAdd.getName()};
+        String[] args = new String[]{"add", "--", pathspecFor(fileToAdd)};
         CommandLine gitAdd = gitWd().withArgs(args);
         runOrBomb(gitAdd);
     }
