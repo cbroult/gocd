@@ -58,6 +58,9 @@ public class ValueStreamMap {
         return currentPipeline;
     }
 
+    private final Set<MaterialRevision> revisionsViaIgnoredDependency = new HashSet<>();
+    private final Set<MaterialRevision> revisionsReachedDirectly = new HashSet<>();
+
     public Node getCurrentMaterial() {
         return currentMaterial;
     }
@@ -80,6 +83,18 @@ public class ValueStreamMap {
             scmNode.addMaterialName(materialName.toString());
         }
         return scmNode;
+    }
+
+    /**
+     * A revision that reached this graph only through an ignoreForScheduling dependency is expected to differ from the
+     * pipeline's own (that dependency is a whitelisted, non-pinning edge), so it never makes the build "incompatible".
+     */
+    public void markRevisionReached(MaterialRevision materialRevision, boolean viaIgnoredDependency) {
+        (viaIgnoredDependency ? revisionsViaIgnoredDependency : revisionsReachedDirectly).add(materialRevision);
+    }
+
+    private boolean isOnlyViaIgnoredDependency(MaterialRevision materialRevision) {
+        return revisionsViaIgnoredDependency.contains(materialRevision) && !revisionsReachedDirectly.contains(materialRevision);
     }
 
     public Node addDownstreamNode(Node node, CaseInsensitiveString parentNodeId) {
@@ -171,7 +186,9 @@ public class ValueStreamMap {
 
         Set<String> latestRevisions = new HashSet<>();
         for (MaterialRevision revision : materialRevisions) {
-            latestRevisions.add(revision.getLatestRevisionString());
+            if (!isOnlyViaIgnoredDependency(revision)) {
+                latestRevisions.add(revision.getLatestRevisionString());
+            }
         }
 
         return latestRevisions.size() > VALID_LATEST_REVISION_STRING_COUNT;
