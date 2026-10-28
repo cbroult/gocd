@@ -17,6 +17,7 @@ package com.thoughtworks.go.server.service;
 
 import com.thoughtworks.go.config.CruiseConfig;
 import com.thoughtworks.go.config.GoConfigDao;
+import com.thoughtworks.go.config.materials.Filter;
 import com.thoughtworks.go.config.materials.PackageMaterial;
 import com.thoughtworks.go.config.materials.PackageMaterialConfig;
 import com.thoughtworks.go.config.materials.PluggableSCMMaterial;
@@ -28,6 +29,8 @@ import com.thoughtworks.go.domain.MaterialRevision;
 import com.thoughtworks.go.domain.MaterialRevisions;
 import com.thoughtworks.go.domain.Pipeline;
 import com.thoughtworks.go.domain.buildcause.BuildCause;
+import com.thoughtworks.go.domain.materials.ModifiedAction;
+import com.thoughtworks.go.domain.materials.Modification;
 import com.thoughtworks.go.helper.MaterialsMother;
 import com.thoughtworks.go.server.caching.GoCache;
 import com.thoughtworks.go.server.dao.DatabaseAccessHelper;
@@ -46,6 +49,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
+
+import java.util.Date;
 
 import static com.thoughtworks.go.config.CaseInsensitiveString.cis;
 import static com.thoughtworks.go.util.SystemEnvironment.RESOLVE_FANIN_MAX_BACK_TRACK_LIMIT;
@@ -845,6 +850,172 @@ public class FaninDependencyResolutionTest {
 
         MaterialRevisions revisionsBasedOnDependencies = getRevisionsBasedOnDependencies(p5, goConfigDao.currentConfig(), given);
         assertThat(revisionsBasedOnDependencies).isEqualTo(given);
+    }
+
+    private static final String UPSTREAM_DIR_FILTER = "upstream-dir/*,upstream-dir/**/*";
+    private static final String DOWNSTREAM_DIR_FILTER = "downstream-dir/*,downstream-dir/**/*";
+
+    // One git repository reaches the downstream pipeline directly (filtered) and through the upstream pipeline, which has
+    // its own, different filter on the same repository:
+    //
+    //        +----[downstream's filter]---------------+
+    //        |                                        v
+    //  git --+                                   downstream
+    //        |                                        ^
+    //        +--> upstream --[dependency material]----+
+    //
+    // Returns the revision of the shared repository that fan-in resolves for the downstream pipeline after a new commit
+    // ("g2") touching committedFile, when the upstream pipeline has run on "g1" only.
+    private String revisionResolvedForDownstream(boolean ignoreForScheduling, String upstreamFilter, Filter downstreamFilter,
+                                                 boolean downstreamFilterIsWhitelist, String committedFile) {
+        GitMaterial gitForUpstream = u.wf(new GitMaterial("shared-git-url"), "f1");
+        if (upstreamFilter != null) {
+            gitForUpstream.setInvertFilter(true);
+            gitForUpstream.setFilter(Filter.fromDisplayString(upstreamFilter));
+        }
+        u.checkinInOrder(gitForUpstream, "g1");
+        ScheduleTestUtil.AddedPipeline upstream = u.saveConfigWith("upstream", u.m(gitForUpstream));
+        String upstream1 = u.runAndPass(upstream, "g1");
+
+        GitMaterial gitForDownstream = new GitMaterial("shared-git-url");
+        gitForDownstream.setFolder("f2");
+        gitForDownstream.setInvertFilter(downstreamFilterIsWhitelist);
+        gitForDownstream.setFilter(downstreamFilter);
+        DependencyMaterial dependency = new DependencyMaterial(upstream.material.getName(),
+            upstream.material.getPipelineName(), upstream.material.getStageName(), ignoreForScheduling);
+        ScheduleTestUtil.AddedPipeline downstream = u.saveConfigWith("downstream", u.m(gitForDownstream), u.m(dependency));
+        u.runAndPass(downstream, "g1", upstream1);
+
+        checkin("g2", committedFile, gitForDownstream);
+
+        MaterialRevisions given = u.mrs(u.mr(dependency, false, upstream1), u.mr(gitForDownstream, true, "g2"));
+        return getRevisionsBasedOnDependencies(downstream, goConfigDao.currentConfig(), given)
+            .findRevisionFor(gitForDownstream).getLatestRevisionString();
+    }
+
+    private String revisionResolvedForDownstream(String upstreamFilter, String committedFile) {
+        return revisionResolvedForDownstream(true, upstreamFilter, Filter.fromDisplayString(DOWNSTREAM_DIR_FILTER), true,
+            committedFile);
+    }
+
+    // A pipeline with a whitelisted git material and an ignoreForScheduling dependency on a pipeline that watches the same
+    // repository with a whitelist of its own. A commit that only the downstream's whitelist matches must schedule the
+    // downstream: the upstream will never build it, so nothing would ever move a pin to the upstream's revision.
+    @Test
+    public void shouldScheduleDownstreamPipeline_withDiamondSharedFilteredMaterialAndIgnoredDependencyMaterial_whenFilteredMaterialHasMatchingChanges() {
+        GitMaterial gitForUpstream = u.wf(new GitMaterial("shared-git-url"), "f1");
+        gitForUpstream.setInvertFilter(true);
+        gitForUpstream.setFilter(Filter.fromDisplayString(UPSTREAM_DIR_FILTER));
+        u.checkinInOrder(gitForUpstream, "g1");
+        ScheduleTestUtil.AddedPipeline upstream = u.saveConfigWith("upstream", u.m(gitForUpstream));
+        String upstream1 = u.runAndPass(upstream, "g1");
+
+        GitMaterial gitForDownstream = new GitMaterial("shared-git-url");
+        gitForDownstream.setFolder("f2");
+        gitForDownstream.setInvertFilter(true);
+        gitForDownstream.setFilter(Filter.fromDisplayString(DOWNSTREAM_DIR_FILTER));
+        DependencyMaterial ignoredDependency = new DependencyMaterial(upstream.material.getName(),
+            upstream.material.getPipelineName(), upstream.material.getStageName(), true);
+        ScheduleTestUtil.AddedPipeline downstream = u.saveConfigWith("downstream", u.m(gitForDownstream), u.m(ignoredDependency));
+        u.runAndPass(downstream, "g1", upstream1);
+
+        // ScheduleTestUtil.checkinFile uses the file's basename only, so it cannot represent a file inside a directory.
+        // The filter matches on the repository-relative path, so the path is passed as the file name.
+        checkin("g2", "downstream-dir/another_file.c", gitForDownstream);
+
+        MaterialRevisions previous = u.mrs(u.mr(ignoredDependency, false, upstream1), u.mr(gitForDownstream, false, "g1"));
+        MaterialRevisions given = u.mrs(u.mr(ignoredDependency, false, upstream1), u.mr(gitForDownstream, true, "g2"));
+
+        assertThat(getBuildCause(downstream, given, previous))
+            .as("a commit matching the downstream's whitelist must schedule it although the dependency did not advance")
+            .isNotNull();
+    }
+
+    // The pin makes the downstream wait for the upstream, as it does for an ordinary dependency. It is kept only when the
+    // upstream will itself build the newer commit.
+    @Test
+    public void shouldKeepThePinWhenIgnoredUpstreamWillBuildTheNewerCommit_soDownstreamWaitsForIt() {
+        // the upstream takes the whole repository, so it will build the commit the downstream also matches
+        assertThat(revisionResolvedForDownstream(null, "downstream-dir/another_file.c")).isEqualTo("g1");
+    }
+
+    @Test
+    public void shouldKeepThePinWhenBothWhitelistsMatchTheNewerCommit() {
+        assertThat(revisionResolvedForDownstream(UPSTREAM_DIR_FILTER + "," + DOWNSTREAM_DIR_FILTER,
+            "downstream-dir/another_file.c")).isEqualTo("g1");
+    }
+
+    @Test
+    public void shouldNotPinWhenIgnoredUpstreamWillNeverBuildTheNewerCommit_soDownstreamIsNotFrozen() {
+        // the upstream's whitelist ignores downstream-dir/, so nothing would ever move the pin
+        assertThat(revisionResolvedForDownstream(UPSTREAM_DIR_FILTER, "downstream-dir/another_file.c")).isEqualTo("g2");
+    }
+
+    @Test
+    public void shouldKeepThePinForACommitOnlyTheUpstreamBuilds_soTheDownstreamStaysOnTheUpstreamsRevision() {
+        assertThat(revisionResolvedForDownstream(UPSTREAM_DIR_FILTER, "upstream-dir/zone")).isEqualTo("g1");
+    }
+
+    @Test
+    public void shouldKeepThePin_whenTheDependencyIsNotIgnoredForScheduling() {
+        // an ordinary dependency pins the downstream to the upstream's revision whatever the upstream's filter says
+        assertThat(revisionResolvedForDownstream(false, UPSTREAM_DIR_FILTER, Filter.fromDisplayString(DOWNSTREAM_DIR_FILTER),
+            true, "downstream-dir/another_file.c")).isEqualTo("g1");
+    }
+
+    @Test
+    public void shouldNotPinWhenTheDownstreamFilterIsABlacklist_andTheUpstreamWillNeverBuildTheNewerCommit() {
+        // a commit outside the downstream's blacklist is one it builds; the upstream's whitelist ignores it
+        assertThat(revisionResolvedForDownstream(true, UPSTREAM_DIR_FILTER, Filter.fromDisplayString("docs/*,docs/**/*"),
+            false, "src/main.c")).isEqualTo("g2");
+    }
+
+    // A chain of three pipelines on one repository, each dependency ignoreForScheduling: a (a-dir/) <- b (b-dir/) <- c (c-dir/).
+    // b has built a commit of its own (g2) that a has not. A new commit under c-dir/ (g3) is ignored by b's whitelist, so b
+    // will never build it: c must be resolved to g3, not pinned to the older revision a's run embeds.
+    @Test
+    public void shouldNotPinThirdLevelPipelineToAnOlderRevision_whenTheMiddlePipelineWillNeverBuildTheNewCommit() {
+        GitMaterial gitForA = u.wf(new GitMaterial("shared-git-url"), "fa");
+        gitForA.setInvertFilter(true);
+        gitForA.setFilter(Filter.fromDisplayString("a-dir/*,a-dir/**/*"));
+        u.checkinInOrder(gitForA, "g1");
+        ScheduleTestUtil.AddedPipeline pipelineA = u.saveConfigWith("pipeline_a", u.m(gitForA));
+        String a1 = u.runAndPass(pipelineA, "g1");
+
+        GitMaterial gitForB = new GitMaterial("shared-git-url");
+        gitForB.setFolder("fb");
+        gitForB.setInvertFilter(true);
+        gitForB.setFilter(Filter.fromDisplayString("b-dir/*,b-dir/**/*"));
+        DependencyMaterial ignoredADependency = new DependencyMaterial(pipelineA.material.getName(),
+            pipelineA.material.getPipelineName(), pipelineA.material.getStageName(), true);
+        ScheduleTestUtil.AddedPipeline pipelineB = u.saveConfigWith("pipeline_b", u.m(gitForB), u.m(ignoredADependency));
+        String b1 = u.runAndPass(pipelineB, "g1", a1);
+
+        GitMaterial gitForC = new GitMaterial("shared-git-url");
+        gitForC.setFolder("fc");
+        gitForC.setInvertFilter(true);
+        gitForC.setFilter(Filter.fromDisplayString("c-dir/*,c-dir/**/*"));
+        DependencyMaterial ignoredBDependency = new DependencyMaterial(pipelineB.material.getName(),
+            pipelineB.material.getPipelineName(), pipelineB.material.getStageName(), true);
+        ScheduleTestUtil.AddedPipeline pipelineC = u.saveConfigWith("pipeline_c", u.m(gitForC), u.m(ignoredBDependency));
+        u.runAndPass(pipelineC, "g1", b1);
+
+        checkin("g2", "b-dir/changed.c", gitForB);
+        String b2 = u.runAndPass(pipelineB, "g2", a1);
+        checkin("g3", "c-dir/changed.c", gitForC);
+
+        MaterialRevisions given = u.mrs(u.mr(ignoredBDependency, false, b2), u.mr(gitForC, true, "g3"));
+        assertThat(getRevisionsBasedOnDependencies(pipelineC, goConfigDao.currentConfig(), given)
+            .findRevisionFor(gitForC).getLatestRevisionString()).isEqualTo("g3");
+    }
+
+    private void checkin(String revision, String file, GitMaterial material) {
+        transactionTemplate.execute(status -> {
+            Modification modification = new Modification("user", "comment", "a@b.com", new Date(), revision);
+            modification.createModifiedFile(file, null, ModifiedAction.added);
+            materialRepository.saveMaterialRevision(new MaterialRevision(material, modification));
+            return null;
+        });
     }
 
     private BuildCause getBuildCause(ScheduleTestUtil.AddedPipeline staging, MaterialRevisions given, MaterialRevisions previous) {

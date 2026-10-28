@@ -24,6 +24,7 @@ import com.thoughtworks.go.config.materials.SubprocessExecutionContext;
 import com.thoughtworks.go.config.materials.dependency.DependencyMaterial;
 import com.thoughtworks.go.config.materials.dependency.DependencyMaterialConfig;
 import com.thoughtworks.go.config.materials.git.GitMaterial;
+import com.thoughtworks.go.config.materials.git.GitMaterialConfig;
 import com.thoughtworks.go.config.materials.svn.SvnMaterial;
 import com.thoughtworks.go.domain.MaterialRevision;
 import com.thoughtworks.go.domain.MaterialRevisions;
@@ -60,6 +61,7 @@ import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallbackWithoutResult;
 
+import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -337,6 +339,49 @@ public class BuildCauseProducerServiceDependencyIntegrationTest {
         dbHelper.saveRevs(gitMaterialRevisions);
 
         //schedule the pipeline
+        pipelineTimeline.update();
+        scheduleHelper.autoSchedulePipelinesWithRealMaterials(downstreamPipelineName);
+        softly.assertThat(pipelineScheduleQueue.toBeScheduled().keySet()).contains(cis(downstreamPipelineName));
+    }
+
+    // A pipeline combining a *filtered* (whitelist, invertFilter) SCM material with an ignoreForScheduling dependency
+    // material must still pick up a new commit that matches the filter. Same shape as
+    // shouldScheduleDownStreamPipeline_withSCMAndDependencyMaterials_whenSCMMaterialHasChanges above; the only difference
+    // is the whitelist on the git material, and a commit inside the whitelisted directory. If this fails, the pipeline was
+    // not queued despite a matching, unconsumed commit.
+    @Test
+    public void shouldScheduleDownStreamPipeline_withFilteredSCMAndDependencyMaterials_whenFilteredSCMMaterialHasMatchingChanges() throws Exception {
+        String downstreamPipelineName = "downstream_pipeline_filtered";
+        //upstream pipeline, ignored for scheduling: its own advancement never gates this pipeline's scheduling
+        DependencyMaterialConfig mingleMaterialConfig = new DependencyMaterialConfig(cis(MINGLE_PIPELINE_NAME), cis(STAGE_NAME));
+        mingleMaterialConfig.ignoreForScheduling(true);
+
+        //git material carries an includes-only whitelist filter (invertFilter=true)
+        GitMaterialConfig filteredGitMaterialConfig = (GitMaterialConfig) gitMaterial.config();
+        filteredGitMaterialConfig.setFilter(Filter.fromDisplayString("important-dir/*,important-dir/**/*"));
+        filteredGitMaterialConfig.setInvertFilter(true);
+
+        //setup the pipeline
+        PipelineConfig downstreamPipelineConfig = configHelper.addPipeline(downstreamPipelineName, STAGE_NAME, new MaterialConfigs(mingleMaterialConfig, filteredGitMaterialConfig), "unit");
+        Pipeline latestMinglePipeline = minglePipeline.latest;
+        String revision = String.format("%s/%s/%s/%s", latestMinglePipeline.getName(), latestMinglePipeline.getCounter(), STAGE_NAME, latestMinglePipeline.getStages().getLast().getCounter());
+        MaterialRevision mingleMaterialRevision = new MaterialRevision(new DependencyMaterial(mingleMaterialConfig), true, new Modification(latestMinglePipeline.getModifiedDate(), revision, latestMinglePipeline.getLabel(), latestMinglePipeline.getId()));
+
+        MaterialRevision gitMaterialRevision = new MaterialRevision(gitMaterial, gitTestRepo.checkInOneFile("new_file.c", "Adding a new file"));
+        MaterialRevisions initialMaterialRevisions = new MaterialRevisions(mingleMaterialRevision, gitMaterialRevision);
+        dbHelper.saveRevs(initialMaterialRevisions);
+        Pipeline latestDownstreamInstance = PipelineMother.schedule(downstreamPipelineConfig, BuildCause.createManualForced(initialMaterialRevisions, new Username(cis("loser"))));
+        latestDownstreamInstance = pipelineDao.saveWithStages(latestDownstreamInstance);
+        dbHelper.passStage(latestDownstreamInstance.getStages().getFirst());
+
+        //make a commit inside the whitelisted directory: it matches the downstream pipeline's own filter
+        new File(gitTestRepo.gitRepository(), "important-dir").mkdirs();
+        List<Modification> newGitModifications = gitTestRepo.checkInOneFile("important-dir/another_file.c", "Adding a new file inside the whitelisted directory");
+        MaterialRevision materialRevision = new MaterialRevision(gitMaterial, newGitModifications);
+        MaterialRevisions gitMaterialRevisions = new MaterialRevisions(materialRevision);
+        dbHelper.saveRevs(gitMaterialRevisions);
+
+        //schedule the pipeline: the commit matches the whitelist, so it is queued like the unfiltered case above
         pipelineTimeline.update();
         scheduleHelper.autoSchedulePipelinesWithRealMaterials(downstreamPipelineName);
         softly.assertThat(pipelineScheduleQueue.toBeScheduled().keySet()).contains(cis(downstreamPipelineName));
