@@ -23,10 +23,12 @@ import com.thoughtworks.go.config.materials.ScmMaterialConfig;
 import com.thoughtworks.go.config.materials.dependency.DependencyMaterialConfig;
 import com.thoughtworks.go.domain.MaterialRevision;
 import com.thoughtworks.go.domain.MaterialRevisions;
+import com.thoughtworks.go.domain.Pipeline;
 import com.thoughtworks.go.domain.PipelineTimelineEntry;
 import com.thoughtworks.go.domain.materials.Material;
 import com.thoughtworks.go.domain.materials.MaterialConfig;
 import com.thoughtworks.go.domain.materials.Modification;
+import com.thoughtworks.go.domain.materials.Modifications;
 import com.thoughtworks.go.presentation.pipelinehistory.PipelineInstanceModel;
 import com.thoughtworks.go.server.dao.PipelineDao;
 import com.thoughtworks.go.server.domain.PipelineTimeline;
@@ -212,9 +214,59 @@ public class FanInGraph {
     private Set<FaninScmMaterial> scmMaterialsOfDepChildren(List<DependencyFanInNode> depChildren) {
         Set<FaninScmMaterial> allScmMaterials = new HashSet<>();
         for (DependencyFanInNode child : depChildren) {
+            // RootFanInNode.setScmRevision (fed by this method) pins a shared direct SCM material's final
+            // revision to the revision a dependency's CURRENT instance embeds. For an ordinary dependency
+            // that is the point: this pipeline follows the upstream's builds. For an ignoreForScheduling
+            // dependency the pin used to be applied too, and discarded a genuinely newer, filter-matching
+            // commit on the direct material in favor of a stale one (the upstream would never build that
+            // commit, so nothing would ever move the pin: a silent freeze).
+            // The pin is therefore kept only for a material on which the upstream WILL build a newer
+            // revision (some commit after the one it built is not ignored by the upstream's own filter):
+            // this pipeline then waits for that build, as it does for an ordinary dependency. Where the
+            // upstream will not build the newer commits, the dependency contributes no pin.
+            if (child.materialConfig.ignoreForScheduling()) {
+                for (FaninScmMaterial scmMaterial : child.scmMaterialForCurrentRevision()) {
+                    if (upstreamWillBuildNewerRevision(child, scmMaterial)) {
+                        allScmMaterials.add(scmMaterial);
+                    }
+                }
+                continue;
+            }
             allScmMaterials.addAll(child.scmMaterialForCurrentRevision());
         }
         return allScmMaterials;
+    }
+
+    /**
+     * Whether the upstream pipeline of {@code upstream} will build a revision newer than the one it built of the
+     * shared SCM material {@code shared}: some modification after it is not ignored by the filter the upstream
+     * pipeline itself declares for that material. The revision the upstream built is read from its MOST RECENT
+     * instance, not from the instance the fan-in is currently considering (it backtracks to an older, compatible
+     * instance) and not from the fan-in set (one revision per fingerprint, possibly embedded by the upstream's own
+     * upstream): measuring from either counts commits the upstream has already built as pending, and the pin freezes
+     * the pipeline one level down. False when the upstream has no
+     * direct material of that fingerprint (the revision reaches it only through its own dependencies, which do not
+     * trigger it), or its latest instance has no revision of it.
+     */
+    private boolean upstreamWillBuildNewerRevision(DependencyFanInNode upstream, FaninScmMaterial shared) {
+        CaseInsensitiveString upstreamName = upstream.materialConfig.getPipelineName();
+        Optional<MaterialConfig> upstreamMaterialConfig = StreamSupport
+            .stream(cruiseConfig.pipelineConfigByName(upstreamName).materialConfigs().spliterator(), false)
+            .filter(config -> !(config instanceof DependencyMaterialConfig))
+            .filter(config -> shared.fingerprint().equals(config.getFingerprint()))
+            .findFirst();
+        if (upstreamMaterialConfig.isEmpty()) {
+            return false;
+        }
+        Pipeline latestUpstreamInstance = pipelineDao.mostRecentPipeline(upstreamName.toString());
+        MaterialRevision builtRevision = latestUpstreamInstance == null ? null
+            : latestUpstreamInstance.getMaterialRevisions().findRevisionForFingerPrint(shared.fingerprint());
+        if (builtRevision == null) {
+            return false;
+        }
+        Material material = materialConfigConverter.toMaterial(upstreamMaterialConfig.get());
+        List<Modification> newer = materialRepository.findModificationsSince(material, builtRevision);
+        return !newer.isEmpty() && !new Modifications(newer).shouldBeIgnoredByFilterIn(upstreamMaterialConfig.get());
     }
 
 
