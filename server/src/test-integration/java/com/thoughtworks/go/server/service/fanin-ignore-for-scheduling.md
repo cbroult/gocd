@@ -67,8 +67,8 @@ All pushed to `github.com/cbroult/gocd`.
 | `a7ed761ccc0c1b46d6856c49f97732d6af987da6` | `cbp/26.1.0` | VSM: no "incompatible revisions" warning for a revision reached only through an ignored dependency |
 | `91959ba71bf3d99bf05630732e94cf6f46ab858f` | `cbp/26.1.0` | refined fan-in: keep the pin when the upstream will build the newer commit |
 
-Not pushed: local commit `9200ddff1a` on `fix/faninsql-diamond-pin-rebased` (the `GitCommand` fix on the PR branch, 2026-10-06). The PR branch on GitHub
-stops at `04a63654fc`, and the refined patch and the VSM change are not on it yet.
+Also pushed: `9200ddff1adebb035370cfd962698facc04d338f` on `fix/faninsql-diamond-pin-rebased` (the `GitCommand` test-helper fix
+for the PR branch, 2026-10-06). The PR branch ends there; the refined patch and the VSM change are only on `cbp/26.1.0` so far.
 
 ## 4. Test results: stock, first patch, refined
 
