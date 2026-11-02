@@ -68,13 +68,14 @@ older instance.
 
 ## 3. What the pull request contains
 
-Branch `fix/fanin-ignore-for-scheduling-pin`, based on current master, three commits:
+Branch `fix/fanin-ignore-for-scheduling-pin`, based on current master, four commits:
 
 | Commit | What |
 |---|---|
 | `f54b525fc2` | test helper: `GitCommand.add` resolves a file in a subdirectory by its path relative to the working directory |
 | `1ce6abe7d6` | fan-in change and its tests |
 | `6087700a40` | VSM change and its tests |
+| last commit | this folder (`fanin-repro/`): the write-up and the Ruby layouts harness, for review only (see the questions below) |
 
 Tests added: in `FaninDependencyResolutionTest`, the freeze in a diamond with a filtered shared material; the pin kept when the
 upstream will build the commit (no filter, and both filters matching); no pin when it never will; the pin kept for an ordinary
@@ -100,8 +101,9 @@ the layouts of section 6 run end to end against real servers. Related discussion
 
 ### Questions for the maintainers
 
-The pull request itself contains only code and Java tests (section 3). The material in this folder (the write-up, the diagrams, the
-Docker-based layouts harness) is not part of it, because the repository has no home for it that we could identify:
+The first three commits of the pull request are code and Java tests (section 3). The last commit adds this folder (the write-up, the
+diagrams, the Docker-based layouts harness) only so that you can see it. The repository has no home for it that we could identify, so it
+is a separate commit that is easy to drop or move:
 
 - In-repo Markdown is limited to community files and a few READMEs next to what they describe; user documentation is at docs.gocd.org
   and the development guide at developer.gocd.org. The fan-in page there (`advanced_usage/fan_in`) does not mention `ignore_for_scheduling`.
@@ -132,7 +134,7 @@ The same change exists for the 26.1.0 release line on the fork's `cbp/26.1.0` br
 | `91959ba71bf3d99bf05630732e94cf6f46ab858f` | `cbp/26.1.0` | refined fan-in: keep the pin when the upstream will build the newer commit |
 | `04a63654fc793035f036577c6dd189428a4323d0`, `9200ddff1adebb035370cfd962698facc04d338f`, `2ea0f515a9700a9e5b91fe11bc153758199ce812`, `7496341d8eadfc2404d7d70d44216c2fa5e77a48`, `27bed32acdbf6079e153d84458ec5713db3fedae`, `a38b4020b4adbe5962f792864405bed11b2756a7` | `fix/faninsql-diamond-pin-rebased` | the earlier master-based branch (superseded by `fix/fanin-ignore-for-scheduling-pin`) |
 | `ca933d7fc0`, `3cede93bfd`, `c732a8b116` | (replaced) | the first clean series: same changes, before the commit messages were rewritten and the test lines re-wrapped |
-| `f54b525fc2`, `1ce6abe7d6`, `6087700a40` | `fix/fanin-ignore-for-scheduling-pin` | the clean series of section 3 |
+| `f54b525fc2`, `1ce6abe7d6`, `6087700a40`, and the docs commit on top | `fix/fanin-ignore-for-scheduling-pin` | the clean series of section 3 |
 
 ## 5. Test results: stock, first patch, final
 
