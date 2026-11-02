@@ -98,6 +98,26 @@ about a revision reached only through an ignored dependency, because the fix now
 Verification: the three suites below on a stock server, with the first version of the change, and with the final change;
 the layouts of section 6 run end to end against real servers. Related discussion: the issue that describes the behaviour.
 
+### Questions for the maintainers
+
+The pull request itself contains only code and Java tests (section 3). The material in this folder (the write-up, the diagrams, the
+Docker-based layouts harness) is not part of it, because the repository has no home for it that we could identify:
+
+- In-repo Markdown is limited to community files and a few READMEs next to what they describe; user documentation is at docs.gocd.org
+  and the development guide at developer.gocd.org. The fan-in page there (`advanced_usage/fan_in`) does not mention `ignore_for_scheduling`.
+- `test/` holds Gradle test-fixture modules (Java), not scripts or end-to-end harnesses. `scripts/` holds small development scripts (one of
+  them Ruby).
+
+Where would you like each of these to live, if anywhere?
+
+1. **Behaviour tests.** We added the scenarios as Java integration tests next to the existing fan-in tests
+   (`FaninDependencyResolutionTest`, `BuildCauseProducerServiceDependencyIntegrationTest`). Is that the right level, or would you want the
+   remaining layouts (separate and partly shared repositories) ported to Java tests as well?
+2. **End-to-end harness.** A Ruby script that starts a real server and agent in Docker and runs seven layouts (about 10 minutes each). Do you
+   want it in this repository (and where: `scripts/`, a new directory, or under `test/`), or should it stay outside and be linked from the issue?
+3. **Documentation.** Would you accept a paragraph on `ignore_for_scheduling` and fan-in in the docs repository, once the behaviour is agreed?
+4. **Diagrams.** Is Markdown with Mermaid diagrams acceptable in this repository at all, or should they live only in the issue and PR text?
+
 ## 4. Commits
 
 The same change exists for the 26.1.0 release line on the fork's `cbp/26.1.0` branch. Its history, all pushed to
