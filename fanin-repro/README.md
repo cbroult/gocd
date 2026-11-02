@@ -72,9 +72,9 @@ Branch `fix/fanin-ignore-for-scheduling-pin`, based on current master, three com
 
 | Commit | What |
 |---|---|
-| `ca933d7fc0` | test helper: `GitCommand.add` resolves a file in a subdirectory by its path relative to the working directory |
-| `3cede93bfd` | fan-in change and its tests |
-| `c732a8b116` | VSM change and its tests |
+| `f54b525fc2` | test helper: `GitCommand.add` resolves a file in a subdirectory by its path relative to the working directory |
+| `1ce6abe7d6` | fan-in change and its tests |
+| `6087700a40` | VSM change and its tests |
 
 Tests added: in `FaninDependencyResolutionTest`, the freeze in a diamond with a filtered shared material; the pin kept when the
 upstream will build the commit (no filter, and both filters matching); no pin when it never will; the pin kept for an ordinary
@@ -111,11 +111,12 @@ The same change exists for the 26.1.0 release line on the fork's `cbp/26.1.0` br
 | `a7ed761ccc0c1b46d6856c49f97732d6af987da6` | `cbp/26.1.0` | VSM change |
 | `91959ba71bf3d99bf05630732e94cf6f46ab858f` | `cbp/26.1.0` | refined fan-in: keep the pin when the upstream will build the newer commit |
 | `04a63654fc793035f036577c6dd189428a4323d0`, `9200ddff1adebb035370cfd962698facc04d338f`, `2ea0f515a9700a9e5b91fe11bc153758199ce812`, `7496341d8eadfc2404d7d70d44216c2fa5e77a48`, `27bed32acdbf6079e153d84458ec5713db3fedae`, `a38b4020b4adbe5962f792864405bed11b2756a7` | `fix/faninsql-diamond-pin-rebased` | the earlier master-based branch (superseded by `fix/fanin-ignore-for-scheduling-pin`) |
-| `ca933d7fc0`, `3cede93bfd`, `c732a8b116` | `fix/fanin-ignore-for-scheduling-pin` | the clean series of section 3 |
+| `ca933d7fc0`, `3cede93bfd`, `c732a8b116` | (replaced) | the first clean series: same changes, before the commit messages were rewritten and the test lines re-wrapped |
+| `f54b525fc2`, `1ce6abe7d6`, `6087700a40` | `fix/fanin-ignore-for-scheduling-pin` | the clean series of section 3 |
 
 ## 5. Test results: stock, first patch, final
 
-The tests of the clean branch (`c732a8b116`) run against three versions of `FanInGraph.java`: stock (master), the first version
+The tests of the clean branch (run on `c732a8b116`; the final commits only rewrap lines and rewrite messages, and the full-suite runs below cover `6087700a40`) run against three versions of `FanInGraph.java`: stock (master), the first version
 of the change (`04a63654fc`), and the final one. Command:
 `./gradlew :server:integrationTest --tests '*FaninDependencyResolutionTest' --tests '*BuildCauseProducerServiceDependencyIntegrationTest'`
 (33 tests, JDK 25, 2026-10-28). The table lists every test that fails on at least one version; all others pass on all
@@ -135,8 +136,29 @@ three.
 ❌ marks a failing test, that is, behaviour that is broken.
 
 Reading it: stock freezes, the first patch fixes the freeze and loses the order, the final change does both. On the clean branch
-`ValueStreamMapTest` and `ValueStreamMapServiceTest` pass (22 and 22). `GitCommandSubmodulesTest` fails 9 of 13 in the environment
-used here, with and without this change (the same failures on master).
+`ValueStreamMapTest` and `ValueStreamMapServiceTest` pass (22 and 22).
+
+### The whole Java suite, fully sequential
+
+`./gradlew test integrationTest` in every module, with one Gradle worker, no parallel execution, one test JVM at a time, no build cache and
+every task rerun, JDK 25, 2026-10-28 to 2026-11-02. Each row is one complete run.
+
+| Version | Commit | Tests | Failed | Failing here and not on master |
+|---|---|---|---|---|
+| stock master | `6b3bd71c21` | 13,359 | 238 | none |
+| first patch | `04a63654fc` | 13,357 | 239 | 1 (see below) |
+| previous PR branch | `a38b4020b4` | 13,364 | 239 | 1 (see below) |
+| final | `6087700a40` | 13,370 | 239 | 1 (see below) |
+| final, second run | `6087700a40` | 13,370 | 238 | none |
+| stock master, second run | `6b3bd71c21` | 13,359 | 238 | none |
+
+- The 238 failures of stock master fail on every version. They come from the environment (for example no `p4` or `hg`, and
+  `GitCommandSubmodulesTest`, whose repository setup fails here with "not a git repository", on master as well).
+- The one extra failure in the first runs is `BackupServiceIntegrationTest.shouldBackupConfigRepository`. Its message is a JUnit temporary
+  directory cleanup error (`DirectoryNotEmptyException`), not an assertion. The test passes when the class runs alone on the final branch and
+  on master (three runs each), and it passes in the second full run of the final branch, so it is a flake and not caused by the change.
+- Parallel test JVMs break the server's integration tests as a group (an eight-way parallel run failed all of them on both sides), so the
+  integration suite has to run sequentially.
 
 ## 6. Behaviour across repository layouts (end to end)
 
